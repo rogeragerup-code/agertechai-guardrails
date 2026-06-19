@@ -1,0 +1,11 @@
+# Copy this into a consuming repo at .github/workflows/guardrails.yml
+# (rename the file; keep the job). One line wires the whole security floor in.
+name: guardrails
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guardrails:
+    uses: rogeragerup-code/agertechai-guardrails/.github/workflows/check.yml@v1

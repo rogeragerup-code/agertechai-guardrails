@@ -1,0 +1,38 @@
+# Reusable guardrails check — other repos call this with one line:
+#
+#   jobs:
+#     guardrails:
+#       uses: rogeragerup-code/agertechai-guardrails/.github/workflows/check.yml@v1
+#
+# It checks out the CALLING repo, fetches the pinned guardrails script, and runs it.
+name: guardrails
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "guardrails version tag to run (defaults to v1)"
+        required: false
+        type: string
+        default: v1
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+
+      - name: Fetch guardrails script
+        uses: actions/checkout@v4
+        with:
+          repository: rogeragerup-code/agertechai-guardrails
+          ref: ${{ inputs.ref }}
+          path: .guardrails
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run guardrails
+        run: node .guardrails/guardrails.mjs .

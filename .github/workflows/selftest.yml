@@ -1,0 +1,16 @@
+# CI for the guardrails repo itself: prove every rule still fires on the fixture.
+name: selftest
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node test/run.mjs
