@@ -15,6 +15,15 @@ on:
         required: false
         type: string
         default: v1
+      supabase_project_ref:
+        description: "Supabase project ref — set it (plus the SUPABASE_ACCESS_TOKEN secret) to enable the database Security Advisor check. Leave empty to skip."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SUPABASE_ACCESS_TOKEN:
+        description: "Supabase personal/management access token for the Advisor check. Optional — the DB check skips when absent."
+        required: false
 
 jobs:
   guardrails:
@@ -34,5 +43,11 @@ jobs:
         with:
           node-version: 20
 
-      - name: Run guardrails
+      - name: Run guardrails (code)
         run: node .guardrails/guardrails.mjs .
+
+      - name: Run Supabase Security Advisor (database)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ inputs.supabase_project_ref }}
+        run: node .guardrails/db-advisor.mjs .

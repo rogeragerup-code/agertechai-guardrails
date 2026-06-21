@@ -9,3 +9,10 @@ on:
 jobs:
   guardrails:
     uses: rogeragerup-code/agertechai-guardrails/.github/workflows/check.yml@v1
+    # Optional: also run the Supabase Security Advisor on every push. Add the
+    # SUPABASE_ACCESS_TOKEN repo secret and your project ref to enable it.
+    # Omit both lines to run code checks only (the DB step skips cleanly).
+    # with:
+    #   supabase_project_ref: your-project-ref
+    # secrets:
+    #   SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
