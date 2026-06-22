@@ -68,6 +68,13 @@ const SELECT_STAR = /\.select\(\s*['"`]\s*\*\s*['"`]/;
 const CORS_WILDCARD = /Access-Control-Allow-Origin['"]?\s*[:,]\s*['"]\*['"]/;
 const WEAK_REDIRECT = /\.startsWith\(\s*['"]\/\/['"]\s*\)/;
 const STRONG_REDIRECT = /\/\^\\\/\(\?!\\\/\)\[\^\\\\\]\*\$\//; // /^\/(?!\/)[^\\]*$/
+// Rule 8 — secret in logs: a console.* call whose args reference an env secret
+// or a known secret identifier. High-signal patterns only (env vars ending
+// KEY/SECRET/TOKEN/PASSWORD, or compound secret var names) so prose like
+// console.log("token refreshed") does NOT trip it.
+const CONSOLE_CALL = /console\.(?:log|error|warn|info|debug|trace)\s*\(/;
+const SECRET_IDENT =
+  /process\.env\.[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CRED)[A-Z0-9_]*|\b(?:service[_-]?role[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key)\b/i;
 
 for (const file of codeFiles) {
   const text = readFileSync(file, "utf8");
@@ -102,6 +109,11 @@ for (const file of codeFiles) {
     // Rule 5 — open redirect: weak //-guard without the canonical regex in the file.
     if (WEAK_REDIRECT.test(line) && !hasStrongRedirect && !suppressed(lines, i, "weak-redirect")) {
       flag("weak-redirect", file, n, "startsWith('//') misses /\\evil.com — use /^\\/(?!\\/)[^\\\\]*$/ to validate redirect params.");
+    }
+
+    // Rule 8 — secret in logs: never log API keys, tokens, or service-role keys.
+    if (CONSOLE_CALL.test(line) && SECRET_IDENT.test(line) && !suppressed(lines, i, "secret-in-log")) {
+      flag("secret-in-log", file, n, "console.* logging a secret (env key/token/service-role) — logs leak into transcripts and aggregators; redact or remove.");
     }
   }
 }

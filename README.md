@@ -40,12 +40,13 @@ Each rule maps 1:1 to a real breach class (see the engineering reference for sou
 | `weak-redirect` | `startsWith("//")` guard without the canonical regex | Open redirect (`/\evil.com` bypass) |
 | `missing-rls` | a `create table` with no matching `enable row level security` | Lovable CVE-2025-48757 RLS-bypass class |
 | `missing-csp` | `middleware.ts` present but no `Content-Security-Policy` | No nonce-based CSP |
+| `secret-in-log` | `console.*` logging an env secret or a known secret identifier | Secrets leaking into logs / aggregators |
 
 Scope: code rules scan `src/` and `app/`; the RLS rule aggregates across all of `supabase/migrations/` (a table may be created in one migration and RLS-enabled in another); the CSP rule reads `middleware.ts`/`src/middleware.ts`. A repo with **no** middleware gets a warning, not a failure — greenfield repos may not have one yet.
 
 ## Database side — Supabase Security Advisor (opt-in)
 
-The seven rules above check **code**. They can't see the live database, where the
+The eight rules above check **code**. They can't see the live database, where the
 2026-06 cross-product sweep found the real issues (leftover `anon` execute on
 `SECURITY DEFINER` functions, unpinned `search_path`, anon `INSERT WITH CHECK(true)`
 lead tables). To run the Supabase **Security Advisor** automatically in CI, give the
@@ -95,6 +96,6 @@ Tags are how repos pin a version. When a rule tightens:
 
 The self-test (`test/run.mjs`) runs a deliberately-insecure fixture and asserts every rule fires exactly once and that a correctly-secured table is **not** flagged. It runs in CI on every push.
 
-## Why these seven
+## Why these eight
 
 They are the rules a linter passes straight through — authorization, policy, and data-exposure correctness, not style. Spend human review here; let CI hold the floor.

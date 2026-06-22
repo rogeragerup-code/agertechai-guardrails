@@ -18,5 +18,8 @@ export async function bad(supabase: any, comment: string, nextParam: string) {
   // cors-wildcard
   const headers = { "Access-Control-Allow-Origin": "*" };
 
+  // secret-in-log (uses an api key, not the service-role one, so only this rule fires)
+  console.log("boot", process.env.ANTHROPIC_API_KEY);
+
   return { rows, key, safe, el, headers };
 }

@@ -19,6 +19,7 @@ const EXPECTED = [
   "cors-wildcard",
   "missing-rls",
   "missing-csp",
+  "secret-in-log",
 ];
 
 let output = "";
