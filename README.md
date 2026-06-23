@@ -44,12 +44,12 @@ Each rule maps 1:1 to a real breach class (see the engineering reference for sou
 
 Scope: code rules scan `src/` and `app/`; the RLS rule aggregates across all of `supabase/migrations/` (a table may be created in one migration and RLS-enabled in another); the CSP rule reads `middleware.ts`/`src/middleware.ts`. A repo with **no** middleware gets a warning, not a failure — greenfield repos may not have one yet.
 
-## Database side — Supabase Security Advisor (opt-in)
+## Database side — Supabase Advisors (opt-in)
 
 The eight rules above check **code**. They can't see the live database, where the
 2026-06 cross-product sweep found the real issues (leftover `anon` execute on
 `SECURITY DEFINER` functions, unpinned `search_path`, anon `INSERT WITH CHECK(true)`
-lead tables). To run the Supabase **Security Advisor** automatically in CI, give the
+lead tables). To run the Supabase **Advisors** automatically in CI, give the
 caller a project ref + token:
 
 ```yaml
@@ -66,11 +66,19 @@ jobs:
 
 Add `SUPABASE_ACCESS_TOKEN` (a Supabase personal/management token) as a repo secret.
 **Safe by default:** with neither set, the DB step skips — existing callers are
-unaffected. It **fails** CI on `ERROR`-level advisor lints plus the two high-signal
-WARN classes (`anon_security_definer_function_executable`, `rls_policy_always_true`),
-**reports** the nuanced ones (search_path, intended definer fns, `extension_in_public`),
-and never blocks a build on an Advisor API hiccup. Suppress a verified-safe finding
-by adding its `cache_key` to `.guardrails-db-allow`.
+unaffected. Two lanes run:
+
+- **Security** (can fail the build): **fails** CI on `ERROR`-level advisor lints plus
+  the two high-signal WARN classes (`anon_security_definer_function_executable`,
+  `rls_policy_always_true`), and **reports** the nuanced ones (search_path, intended
+  definer fns, `extension_in_public`).
+- **Performance** (advisory only — never blocks): surfaces the index/RLS hygiene the
+  static code checker structurally can't see — unindexed foreign keys, RLS-initplan
+  perf (`auth.<fn>()` re-evaluated per row), unused/duplicate indexes. A missing index
+  is a perf smell, not a vulnerability, so it is reported, not gated.
+
+Neither lane blocks a build on an Advisor API hiccup. Suppress a verified-safe finding
+(either lane) by adding its `cache_key` to `.guardrails-db-allow`.
 
 Full DB-side floor + the human-review items the Advisor can't check (rate-limit
 coverage, JWT-theft posture, DoS resilience): engineering reference §1.6 +
