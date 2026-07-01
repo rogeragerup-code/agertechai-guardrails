@@ -23,16 +23,47 @@
 // Suppress a verified-safe finding: add its `cache_key` to .guardrails-db-allow
 // (one per line; `#` comments allowed) in the calling repo root.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 
 const token = process.env.SUPABASE_ACCESS_TOKEN;
 const ref = process.env.SUPABASE_PROJECT_REF;
 const root = process.argv[2] || ".";
 
+// Detect whether the calling repo actually uses Supabase, so an unconfigured
+// advisor gate becomes a REMINDER (not a silent skip) exactly where it's needed
+// — including brand-new repos that added Supabase but never wired the gate.
+function usesSupabase(dir) {
+  try {
+    const pkg = JSON.parse(readFileSync(`${dir}/package.json`, "utf8"));
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    if (Object.keys(deps).some((d) => d.startsWith("@supabase/"))) return true;
+  } catch {
+    /* no/unreadable package.json */
+  }
+  try {
+    if (statSync(`${dir}/supabase`).isDirectory()) return true;
+  } catch {
+    /* no supabase/ dir */
+  }
+  return false;
+}
+
 if (!token || !ref) {
-  console.log(
-    "[db-advisor] skipped — set SUPABASE_ACCESS_TOKEN (secret) + SUPABASE_PROJECT_REF to enable the database advisor checks.",
-  );
+  if (usesSupabase(root)) {
+    const missing = [];
+    if (!ref) missing.push("the `supabase_project_ref` input in guardrails.yml");
+    if (!token) missing.push("the `SUPABASE_ACCESS_TOKEN` repo secret");
+    const msg =
+      `This repo uses Supabase but the DB Security Advisor gate isn't fully wired — missing ${missing.join(" + ")}. ` +
+      `Wire it so schema regressions are caught in CI (engineering reference §1.6 / CLAUDE.md rule 22). Reminder only — not blocking.`;
+    // GitHub Actions annotation → surfaces in the Checks/PR UI, not just the log.
+    console.log(`::warning title=Supabase DB advisor gate not wired::${msg}`);
+    console.log(`[db-advisor] ⚠ ${msg}`);
+  } else {
+    console.log(
+      "[db-advisor] skipped — no Supabase usage detected (no @supabase/* dependency or supabase/ directory).",
+    );
+  }
   process.exit(0);
 }
 
