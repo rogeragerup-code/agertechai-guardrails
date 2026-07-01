@@ -25,11 +25,14 @@
 
 import { readFileSync, statSync } from "node:fs";
 
-// Trim: a secret set via a shell pipe (e.g. PowerShell `$t | gh secret set`)
-// can carry a trailing CR/LF, which makes the Authorization header invalid and
-// surfaces as undici UND_ERR_INVALID_ARG ("fetch failed") before any request.
-const token = (process.env.SUPABASE_ACCESS_TOKEN || "").trim();
-const ref = (process.env.SUPABASE_PROJECT_REF || "").trim();
+// Sanitize to printable ASCII: a secret set via a shell pipe (e.g. PowerShell
+// `$t | gh secret set`) can arrive CRLF-tailed / BOM-prefixed / oddly encoded,
+// leaving a control char in the value that makes the Authorization header
+// invalid → undici throws UND_ERR_INVALID_ARG ("fetch failed") before any
+// request. Supabase tokens + project refs are printable ASCII, so strip the rest.
+const clean = (v) => (v || "").replace(/[^\x21-\x7E]/g, "");
+const token = clean(process.env.SUPABASE_ACCESS_TOKEN);
+const ref = clean(process.env.SUPABASE_PROJECT_REF);
 const root = process.argv[2] || ".";
 
 // Detect whether the calling repo actually uses Supabase, so an unconfigured
