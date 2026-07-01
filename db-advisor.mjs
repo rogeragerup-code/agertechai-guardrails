@@ -91,7 +91,16 @@ try {
 async function fetchLints(lane) {
   const url = `https://api.supabase.com/v1/projects/${ref}/advisors/${lane}`;
   try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        // Some WAFs (Supabase's API is fronted by one) reset UA-less requests
+        // at the connection layer — which surfaces as a bare "fetch failed".
+        "User-Agent": "agertechai-guardrails-db-advisor",
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(15000),
+    });
     if (!res.ok) {
       console.log(`[db-advisor] ${lane} advisor returned HTTP ${res.status} — skipping that lane.`);
       return null;
@@ -99,7 +108,12 @@ async function fetchLints(lane) {
     const body = await res.json();
     return body.lints ?? body.result?.lints ?? (Array.isArray(body) ? body : []);
   } catch (e) {
-    console.log(`[db-advisor] ${lane} advisor fetch failed (${e.message}) — skipping that lane.`);
+    // Surface the underlying cause (ENOTFOUND / ECONNRESET / timeout …) instead
+    // of a bare "fetch failed", so a systematic CI-network issue is diagnosable.
+    const cause = e?.cause?.code || e?.cause?.message || e?.code || "";
+    console.log(
+      `[db-advisor] ${lane} advisor fetch failed (${e.message}${cause ? ` — cause: ${cause}` : ""}) — skipping that lane.`,
+    );
     return null;
   }
 }
