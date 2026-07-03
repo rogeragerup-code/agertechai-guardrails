@@ -21,5 +21,9 @@ export async function bad(supabase: any, comment: string, nextParam: string) {
   // secret-in-log (uses an api key, not the service-role one, so only this rule fires)
   console.log("boot", process.env.ANTHROPIC_API_KEY);
 
-  return { rows, key, safe, el, headers };
+  // JSX-form marker above the line must suppress (regression test, 2026-07-03):
+  {/* guardrails-allow: dangerous-html */}
+  const ok = <div dangerouslySetInnerHTML={{ __html: "<b>static</b>" }} />;
+
+  return { rows, key, safe, el, headers, ok };
 }

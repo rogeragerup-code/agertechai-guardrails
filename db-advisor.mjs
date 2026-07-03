@@ -15,6 +15,9 @@
 //   - Advisor API unreachable / non-200                    → skip that lane
 //                                                            (never blocks a deploy
 //                                                            on an API hiccup).
+//   - HTTP 401/403 (invalid/revoked token)                 → skip BUT emit a
+//     ::warning annotation — a dead token silently disables the gate forever,
+//     so it must be visible in the Checks UI, not just the log.
 //
 // Env:
 //   SUPABASE_ACCESS_TOKEN  (secret) — Supabase personal/management access token
@@ -109,6 +112,9 @@ async function fetchLints(lane) {
     });
     if (!res.ok) {
       console.log(`[db-advisor] ${lane} advisor returned HTTP ${res.status} — skipping that lane.`);
+      // An invalid/revoked token is NOT an API hiccup: it silently disables the
+      // gate on every future run. Return a sentinel so the caller can shout.
+      if (res.status === 401 || res.status === 403) return { authError: res.status };
       return null;
     }
     const body = await res.json();
@@ -128,49 +134,68 @@ function notAllowed(l) {
   return !(l.cache_key && allow.has(l.cache_key));
 }
 
-// ── SECURITY lane (can fail the build) ──────────────────────────────────────
-const secLints = await fetchLints("security");
-if (secLints === null) process.exit(0); // API hiccup on the blocking lane — don't block
-
-const fails = [];
-const secAdvisories = [];
-for (const l of secLints.filter(notAllowed)) {
-  const level = String(l.level || "").toUpperCase();
-  if (level === "ERROR" || BLOCK_WARN.has(l.name)) fails.push(l);
-  else secAdvisories.push(l);
-}
-
-if (secAdvisories.length) {
-  console.log(`\n[db-advisor] security: ${secAdvisories.length} advisory finding(s) (not blocking — review per §1.6):`);
-  for (const l of secAdvisories) {
-    console.log(`  · ${l.level} ${l.name}: ${l.detail ?? l.title ?? ""}`);
+// After a fetch, never process.exit() — on Windows Node it trips a libuv
+// assert (async.c) while undici handles are still closing, turning exit 0
+// into exit 127. Set exitCode and let the loop drain instead.
+async function main() {
+  // ── SECURITY lane (can fail the build) ────────────────────────────────────
+  const secLints = await fetchLints("security");
+  if (secLints && secLints.authError) {
+    // A bad token means the DB gate is OFF until a human rotates the secret —
+    // annotate loudly (same surface as the not-wired reminder) but don't block,
+    // so a token expiry can't freeze every deploy. Rotate it promptly.
+    const msg =
+      `SUPABASE_ACCESS_TOKEN was rejected (HTTP ${secLints.authError}) — the DB Security Advisor gate is NOT running. ` +
+      `Rotate/re-set the repo secret; until then schema regressions pass CI unchecked.`;
+    console.log(`::warning title=Supabase DB advisor token invalid::${msg}`);
+    console.log(`[db-advisor] ⚠ ${msg}`);
+    return 0;
   }
-}
+  if (secLints === null) return 0; // API hiccup on the blocking lane — don't block
 
-// ── PERFORMANCE lane (advisory only — never blocks) ─────────────────────────
-// Index/RLS hygiene the static code checker can't see. Surfaced, not gated.
-const perfLints = await fetchLints("performance");
-if (perfLints) {
-  const shown = perfLints.filter(notAllowed);
-  if (shown.length) {
-    console.log(`\n[db-advisor] performance: ${shown.length} advisory finding(s) (not blocking — index/RLS hygiene):`);
-    for (const l of shown) {
+  const fails = [];
+  const secAdvisories = [];
+  for (const l of secLints.filter(notAllowed)) {
+    const level = String(l.level || "").toUpperCase();
+    if (level === "ERROR" || BLOCK_WARN.has(l.name)) fails.push(l);
+    else secAdvisories.push(l);
+  }
+
+  if (secAdvisories.length) {
+    console.log(`\n[db-advisor] security: ${secAdvisories.length} advisory finding(s) (not blocking — review per §1.6):`);
+    for (const l of secAdvisories) {
       console.log(`  · ${l.level} ${l.name}: ${l.detail ?? l.title ?? ""}`);
     }
   }
-}
 
-// ── Verdict (only the security lane can fail the build) ─────────────────────
-if (fails.length) {
-  console.error(`\n[db-advisor] ${fails.length} BLOCKING security finding(s):`);
-  for (const l of fails) {
-    console.error(`  ✗ ${l.level} ${l.name}: ${l.detail ?? l.title ?? ""}`);
-    if (l.remediation) console.error(`      ${l.remediation}`);
+  // ── PERFORMANCE lane (advisory only — never blocks) ───────────────────────
+  // Index/RLS hygiene the static code checker can't see. Surfaced, not gated.
+  const perfLints = await fetchLints("performance");
+  if (Array.isArray(perfLints)) {
+    const shown = perfLints.filter(notAllowed);
+    if (shown.length) {
+      console.log(`\n[db-advisor] performance: ${shown.length} advisory finding(s) (not blocking — index/RLS hygiene):`);
+      for (const l of shown) {
+        console.log(`  · ${l.level} ${l.name}: ${l.detail ?? l.title ?? ""}`);
+      }
+    }
   }
-  console.error(
-    "\nFix these, or — if verified safe — add the finding's cache_key to .guardrails-db-allow.",
-  );
-  process.exit(1);
+
+  // ── Verdict (only the security lane can fail the build) ───────────────────
+  if (fails.length) {
+    console.error(`\n[db-advisor] ${fails.length} BLOCKING security finding(s):`);
+    for (const l of fails) {
+      console.error(`  ✗ ${l.level} ${l.name}: ${l.detail ?? l.title ?? ""}`);
+      if (l.remediation) console.error(`      ${l.remediation}`);
+    }
+    console.error(
+      "\nFix these, or — if verified safe — add the finding's cache_key to .guardrails-db-allow.",
+    );
+    return 1;
+  }
+
+  console.log("\n[db-advisor] OK — no blocking security advisor findings.");
+  return 0;
 }
 
-console.log("\n[db-advisor] OK — no blocking security advisor findings.");
+process.exitCode = await main();
