@@ -1,0 +1,7 @@
+{
+  "name": "fixture-sentry-no-boundary",
+  "private": true,
+  "dependencies": {
+    "@sentry/nextjs": "^10.70.0"
+  }
+}

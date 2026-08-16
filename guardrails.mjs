@@ -195,6 +195,43 @@ if (middleware) {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 9 — Sentry installed but no root error boundary. WARNING only, for the
+// same reason as the middleware case: several repos already ship Sentry without
+// this file, and gating on it would red their CI in one go the moment @v1 moves.
+//
+// Why it is worth surfacing at all: a React RENDER error that escapes the root
+// layout never fires window.onerror — the error boundary catches it first — so a
+// pre-init buffer listening on window error/unhandledrejection is structurally
+// blind to it. Without app/global-error.tsx those crashes are reported NOWHERE,
+// and the app looks healthy because every server-side check still returns 200.
+// Found on agertechai-web 2026-08-14; Sentry's own build warning had been
+// scrolling past unread for weeks.
+// ---------------------------------------------------------------------------
+const pkgPath = join(ROOT, "package.json");
+if (existsSync(pkgPath)) {
+  let pkg = null;
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  } catch {
+    // An unparseable package.json is a different problem, and not this rule's to police.
+  }
+  const deps = pkg ? { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) } : {};
+  if (deps["@sentry/nextjs"]) {
+    const appDir = ["app", "src/app"].map((d) => join(ROOT, d)).find(existsSync);
+    if (appDir) {
+      const hasBoundary = ["tsx", "jsx", "ts", "js"].some((ext) =>
+        existsSync(join(appDir, `global-error.${ext}`)),
+      );
+      if (!hasBoundary) {
+        warnings.push(
+          "@sentry/nextjs is installed but there is no app/global-error.tsx — a React render error escaping the root layout never fires window.onerror, so it is reported nowhere. Add the boundary, and force SDK init inside it if your Sentry init is deferred.",
+        );
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rule 3 (config side) — wildcard CORS in vercel.json headers. WARNING only:
 // `*` on public static assets (fonts, images) is legitimate, and JSON has no
 // comment syntax for a suppression marker — so surface it, don't gate on it.

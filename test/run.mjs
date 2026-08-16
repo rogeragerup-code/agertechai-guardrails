@@ -62,6 +62,22 @@ assert(count(reportOnly.output, "missing-csp") === 1, "csp-report-only: missing-
 const suppressedCsp = run("fixtures-csp-suppressed");
 assert(suppressedCsp.exitCode === 0, `csp-suppressed: expected exit 0, got ${suppressedCsp.exitCode}`);
 
+// ── Sentry without app/global-error.* — WARNS but must NOT gate ─────────────
+const sentryNoBoundary = run("fixtures-sentry-no-boundary");
+assert(
+  sentryNoBoundary.exitCode === 0,
+  `sentry-no-boundary: expected exit 0 (warning, not a gate), got ${sentryNoBoundary.exitCode}`,
+);
+assert(
+  /no app\/global-error\.tsx/.test(sentryNoBoundary.output),
+  "sentry-no-boundary: global-error warning did not fire",
+);
+// And the inverse: no Sentry dependency means no warning, so repos without it stay quiet.
+assert(
+  !/global-error/.test(suppressedCsp.output),
+  "csp-suppressed: global-error warning fired on a fixture with no @sentry/nextjs (false positive)",
+);
+
 if (failures.length) {
   console.error("✗ self-test FAILED:");
   for (const f of failures) console.error(`  - ${f}`);
