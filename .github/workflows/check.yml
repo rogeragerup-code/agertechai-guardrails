@@ -29,8 +29,15 @@ jobs:
   guardrails:
     runs-on: ubuntu-latest
     steps:
+      # persist-credentials: false på BEGGE checkouts — denne workflowen leser bare
+      # kode og pusher aldri. Uten flagget skriver checkout v2+ GITHUB_TOKEN inn i
+      # .git/config, der ethvert senere steg (inkl. tredjeparts-actions) kan lese
+      # den. Ekstra viktig her: dette er en REUSABLE workflow som kjører i 12
+      # repoer, så tokenet ville ligget eksponert i hver eneste av dem.
       - name: Checkout calling repo
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Fetch guardrails script
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -38,6 +45,7 @@ jobs:
           repository: rogeragerup-code/agertechai-guardrails
           ref: ${{ inputs.ref }}
           path: .guardrails
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
