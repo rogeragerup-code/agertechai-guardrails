@@ -62,6 +62,50 @@ assert(count(reportOnly.output, "missing-csp") === 1, "csp-report-only: missing-
 const suppressedCsp = run("fixtures-csp-suppressed");
 assert(suppressedCsp.exitCode === 0, `csp-suppressed: expected exit 0, got ${suppressedCsp.exitCode}`);
 
+// ── Next 16 renamed middleware → proxy. The checker must SEE the new name ───
+// Before this, a migrated repo dropped silently out of rule 7: no file found,
+// so missing-csp could not fire, and CI looked green because it had stopped
+// looking. Each case below is one rung of the severity ladder.
+
+// proxy.* WITH an enforcing CSP — the target shape, must be clean.
+const proxyCsp = run("fixtures-proxy-csp");
+assert(proxyCsp.exitCode === 0, `proxy-csp: expected exit 0, got ${proxyCsp.exitCode}`);
+assert(
+  !/No proxy\.\* or middleware/.test(proxyCsp.output),
+  "proxy-csp: checker did not recognise src/proxy.ts as the edge entrypoint",
+);
+
+// proxy.* with NO CSP anywhere — must be a hard fail, not a warning.
+const proxyNoCsp = run("fixtures-proxy-no-csp");
+assert(proxyNoCsp.exitCode === 1, `proxy-no-csp: expected exit 1, got ${proxyNoCsp.exitCode}`);
+assert(count(proxyNoCsp.output, "missing-csp") === 1, "proxy-no-csp: missing-csp did not fire on a proxy.ts");
+
+// proxy.* without CSP but next.config has one — documented static-surface
+// exception (reference §1.4). Must WARN and must NOT gate: failing here would
+// red agertechai-web and agerup.it for a decision that was deliberate.
+const proxyConfigCsp = run("fixtures-proxy-config-csp");
+assert(
+  proxyConfigCsp.exitCode === 0,
+  `proxy-config-csp: expected exit 0 (warning, not a gate), got ${proxyConfigCsp.exitCode}`,
+);
+assert(
+  /next\.config does/.test(proxyConfigCsp.output),
+  "proxy-config-csp: the next.config-CSP warning did not fire",
+);
+assert(
+  count(proxyConfigCsp.output, "missing-csp") === 0,
+  "proxy-config-csp: missing-csp fired even though next.config sets a CSP",
+);
+
+// BOTH spellings present — Next resolves one and ignores the other in silence.
+// This duplicate shipped HR-Kompis to prod 404ing every unprefixed route.
+const duplicateEdge = run("fixtures-duplicate-edge");
+assert(duplicateEdge.exitCode === 1, `duplicate-edge: expected exit 1, got ${duplicateEdge.exitCode}`);
+assert(
+  count(duplicateEdge.output, "duplicate-edge-entry") === 1,
+  "duplicate-edge: duplicate-edge-entry did not fire when both middleware.ts and src/proxy.ts exist",
+);
+
 // ── Sentry without app/global-error.* — WARNS but must NOT gate ─────────────
 const sentryNoBoundary = run("fixtures-sentry-no-boundary");
 assert(

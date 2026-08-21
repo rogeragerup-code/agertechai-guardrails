@@ -175,23 +175,67 @@ if (existsSync(migDir)) {
 }
 
 // ---------------------------------------------------------------------------
-// Rule 7 — CSP in middleware. Existing middleware without CSP is a hard fail;
-// no middleware at all is a warning (greenfield repos may not have one yet).
+// Rule 7 — CSP in the edge entrypoint (proxy on Next 16, middleware before it).
+//
+// ⚠ Next 16 RENAMED this convention from `middleware` to `proxy`. Checking only
+// for `middleware` meant every migrated repo silently dropped OUT of this rule:
+// the file was never found, so `missing-csp` could not fire, and the only
+// signal was a warning that read like a greenfield notice. HR-Kompis ran a day
+// with no CI-verified CSP floor that way (2026-08-21) — the rule looked green
+// because it had stopped looking.
+//
+// Severity ladder, deliberately not all-or-nothing:
+//   enforcing CSP in the file          → clean
+//   no CSP anywhere                    → FAIL
+//   CSP only in next.config            → WARN, not fail. Reference §1.4: a
+//     static, no-auth marketing surface may keep a static CSP there on purpose,
+//     because a nonce forces per-request dynamic rendering and kills ISR/PPR.
+//     The checker cannot tell a marketing site from an authenticated product,
+//     so it says so instead of guessing — failing here would red two green
+//     repos (agertechai-web, agerup.it) for a decision that was correct.
+//   no file at all                     → WARN (greenfield repos may lack one)
 // ---------------------------------------------------------------------------
-const middlewareCandidates = [
-  "middleware.ts", "middleware.js", "src/middleware.ts", "src/middleware.js",
-].map((p) => join(ROOT, p));
-const middleware = middlewareCandidates.find(existsSync);
-if (middleware) {
-  const mwText = readFileSync(middleware, "utf8");
+const MIDDLEWARE_NAMES = ["middleware.ts", "middleware.js", "src/middleware.ts", "src/middleware.js"];
+const PROXY_NAMES = ["proxy.ts", "proxy.js", "src/proxy.ts", "src/proxy.js"];
+
+const middlewareFiles = MIDDLEWARE_NAMES.map((p) => join(ROOT, p)).filter(existsSync);
+const proxyFiles = PROXY_NAMES.map((p) => join(ROOT, p)).filter(existsSync);
+// Prefer the proxy spelling when both exist — it is the one Next 16 wires up.
+const edgeEntry = proxyFiles[0] ?? middlewareFiles[0] ?? null;
+
+// Both spellings present: Next resolves ONE and ignores the other in silence.
+// This exact duplicate shipped HR-Kompis to production 404ing every unprefixed
+// route in 2026-06, and no build output mentioned it. Mechanically checkable,
+// so it belongs here rather than in a human checklist.
+if (middlewareFiles.length && proxyFiles.length) {
+  flag(
+    "duplicate-edge-entry",
+    edgeEntry,
+    1,
+    `both a middleware.* (${relative(ROOT, middlewareFiles[0])}) and a proxy.* (${relative(ROOT, proxyFiles[0])}) entrypoint exist — Next resolves one and silently ignores the other, which can drop your CSP and locale routing in production. Keep exactly one (proxy.* on Next 16).`,
+  );
+}
+
+if (edgeEntry) {
+  const mwText = readFileSync(edgeEntry, "utf8");
   // Report-Only does not count — the floor requires an ENFORCING CSP in prod.
   const hasEnforcingCsp = /Content-Security-Policy(?!-Report-Only)/.test(mwText);
   const allowed = /guardrails-allow:\s*missing-csp\b/.test(mwText);
   if (!hasEnforcingCsp && !allowed) {
-    flag("missing-csp", middleware, 1, "middleware exists but sets no enforcing Content-Security-Policy header (Report-Only doesn't count) — add a nonce-based CSP, or if the CSP deliberately lives elsewhere (e.g. next.config headers) add `// guardrails-allow: missing-csp`.");
+    const configCsp = ["next.config.ts", "next.config.js", "next.config.mjs"]
+      .map((p) => join(ROOT, p))
+      .filter(existsSync)
+      .some((f) => /Content-Security-Policy(?!-Report-Only)/.test(readFileSync(f, "utf8")));
+    if (configCsp) {
+      warnings.push(
+        `${relative(ROOT, edgeEntry)} sets no CSP, but next.config does. That is the documented exception for a STATIC, no-auth surface — an authenticated product needs the nonce-CSP in the proxy itself.`,
+      );
+    } else {
+      flag("missing-csp", edgeEntry, 1, "proxy/middleware exists but sets no enforcing Content-Security-Policy header, and neither does next.config (Report-Only doesn't count) — add a nonce-based CSP, or add `// guardrails-allow: missing-csp` if this is provably deliberate.");
+    }
   }
 } else {
-  warnings.push("No middleware file found — a nonce-based CSP in middleware is part of the security floor.");
+  warnings.push("No proxy.* or middleware.* file found — a nonce-based CSP there is part of the security floor.");
 }
 
 // ---------------------------------------------------------------------------
