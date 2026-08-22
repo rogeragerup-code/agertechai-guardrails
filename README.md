@@ -130,3 +130,19 @@ This is a **reflex layer** — line-based regexes that catch the naive form of e
 - **`service-role-client` only sees the literal name in the same file.** The realistic leak — a `"use client"` file importing a server module that holds the key, pulled in transitively by the bundler — needs a build-level check. New-style `sb_secret_...` key env names that don't contain `SERVICE_ROLE_KEY` are also not matched.
 - **`secret-in-log` needs the call and the secret on one line**, and `console.log(JSON.stringify(process.env))` — the worst case — carries no secret identifier to match.
 - **Supply chain: the `v1` tag is mutable by design** (see *Bumping a rule*), and it is the one unpinned link in an otherwise SHA-pinned chain. Callers fetch the checker at `@v1`, and the reusable workflow hands `SUPABASE_ACCESS_TOKEN` to the fetched `db-advisor.mjs`. Anyone who can force-push this repo's tags executes code in every consumer's CI with that secret in the environment. Single-owner repo, branch-protected — accepted; if the ownership model ever widens, switch callers to SHA pins.
+
+### Decision record: no rule for swallowed failure signals (2026-08-21)
+
+Considered and **declined**, recorded so it isn't re-litigated. A failure signal that goes nowhere was measured across the fleet in three mechanical shapes:
+
+1. Destructure the result, omit `error` — `const { data } = await …listFactors()`. The return *is* used, so no floating-value rule can fire.
+2. Bare `await fn(...)` as a statement, discarding a returned failure state — `compensateRacedDelivery()` returns `"none" | "compensated" | "failed"`; two call sites threw it away.
+3. plpgsql `raise warning …; return;` — a normal return, so the caller's `exception when others` never fires and no failure row is written.
+
+A rule was proposed for shape 2 (an awaited call used as a statement whose declared return type isn't `void`). It was declined for three reasons:
+
+- **It needs type-aware ESLint, not this checker.** This repo is line-based text matching; the rule requires type information. It belongs in each repo's `eslint.config`, and none of them currently enables `projectService`.
+- **It covers 2 of the 4 measured instances** — and misses the one that actually reached production (shape 1, in HR's `MfaSection`: a transient error rendered as "two-factor not set up" while disabling the only self-service recovery path).
+- **Shapes 1 and 3 are semantic.** No text pattern distinguishes "correctly ignored a value" from "dropped the error".
+
+Half-coverage on a class like this is worse than none — a green check would read as "we don't swallow failure signals" when it only means "not in the one shape we can see". Kept as a review question instead — *where else do we swallow a failure signal?* — carried in global CLAUDE.md floor rule 20 and in each product's `docs/SECURITY-TODO.md`. Revisit if a repo adopts type-aware linting for other reasons, at which point shape 2 becomes nearly free.
