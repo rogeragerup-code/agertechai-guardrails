@@ -122,6 +122,43 @@ assert(
   "csp-suppressed: global-error warning fired on a fixture with no @sentry/nextjs (false positive)",
 );
 
+// ---------------------------------------------------------------------------
+// Rule 10 — sentry-scrub-disconnected.
+//
+// Three assertions, because the interesting one is the middle: a rule that only
+// checked "does beforeSend appear in this file" would pass the comment-only
+// fixture, and that false-green is the exact failure this rule exists to avoid.
+// The third asserts the inverse — a correctly wired init must stay silent, or
+// the rule is just noise that teaches people to suppress it.
+// ---------------------------------------------------------------------------
+const sentryNoScrub = run("fixtures-sentry-no-scrub");
+// Use the existing count() helper, which anchors on the [rule-id] HEADER.
+// A bare substring count reads 2 findings as 4: each finding prints the rule id
+// twice — once in the header, once inside the guardrails-allow hint.
+const noScrubHits = count(sentryNoScrub.output, "sentry-scrub-disconnected");
+assert(
+  noScrubHits === 2,
+  `sentry-no-scrub: expected exactly 2 findings (missing + comment-only), got ${noScrubHits}`,
+);
+assert(
+  /sentry\.server\.config\.ts/.test(sentryNoScrub.output),
+  "sentry-no-scrub: did not flag the init with no beforeSend at all",
+);
+assert(
+  /sentry\.edge\.config\.ts/.test(sentryNoScrub.output),
+  "sentry-no-scrub: beforeSend present ONLY in a comment was accepted — comment stripping is broken, which is the false-green this rule exists to prevent",
+);
+assert(
+  !/sentry\.client\.config\.ts/.test(sentryNoScrub.output),
+  "sentry-no-scrub: a correctly wired init was flagged (false positive)",
+);
+
+const sentrySuppressed = run("fixtures-sentry-scrub-suppressed");
+assert(
+  !/sentry-scrub-disconnected/.test(sentrySuppressed.output),
+  "sentry-scrub-suppressed: guardrails-allow marker was not honored",
+);
+
 if (failures.length) {
   console.error("✗ self-test FAILED:");
   for (const f of failures) console.error(`  - ${f}`);

@@ -276,6 +276,86 @@ if (existsSync(pkgPath)) {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 10 — Sentry.init() that does not pass a beforeSend scrubber.
+//
+// WHY THIS IS A GATE AND NOT A CHECKLIST ITEM. A repo can have a correct,
+// well-tested credential scrubber and still send unscrubbed events, because
+// nothing links "the scrubber works" to "the scrubber is wired in". Measured in
+// crm-agertechai 2026-08-27: deleting `beforeSend` plus its import from
+// sentry.server.config.ts left the scrubber's own 12-gate test suite at 12/12,
+// tsc at 0, eslint at 0 and guardrails at 0. Every gate green over a scrubber
+// connected to nothing.
+//
+// Sentry events are logs (floor rule 16: structured, secret-free). A URL with a
+// `?code=` or `?token=` in a breadcrumb is exactly what the scrubber exists to
+// redact, and an unwired scrubber redacts nothing.
+//
+// BLOCKING, not a warning — measured across all 12 wired repos before shipping:
+// 18 Sentry.init calls in 6 repos, every one already passing beforeSend. The
+// other 6 repos have no Sentry at all, so the rule self-scopes and stays silent
+// there. Zero repos break on adoption.
+//
+// TWO IMPLEMENTATION DETAILS THAT ARE NOT OPTIONAL, both learned the hard way:
+//   1. Comments are stripped first. A raw substring search is satisfied by a
+//      comment that merely mentions beforeSend — that exact false-green was
+//      mutation-proved three times in one day in the calling repo.
+//   2. The match is scoped to the init call by paren depth, not to the file.
+//      "beforeSend appears somewhere in this file" is a different claim from
+//      "this init call passes it", and only the second one is the property.
+// ---------------------------------------------------------------------------
+const sentryConfigs = ["server", "edge", "client"]
+  .flatMap((k) => [`sentry.${k}.config.ts`, `sentry.${k}.config.js`, `sentry.${k}.config.mjs`])
+  .map((p) => join(ROOT, p))
+  .filter(existsSync);
+
+// codeFiles covers src/app/lib/etc, but Sentry's generated configs live at the
+// repo ROOT and are not in it — miss them and the rule reads clean on the very
+// files most likely to hold an init call.
+for (const file of [...new Set([...codeFiles, ...sentryConfigs])]) {
+  const raw = readFileSync(file, "utf8");
+  if (!raw.includes("Sentry.init(")) continue;
+  if (/guardrails-allow:\s*sentry-scrub-disconnected\b/.test(raw)) continue;
+
+  const lines = [];
+  let inBlockComment = false;
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (inBlockComment) {
+      if (t.includes("*/")) inBlockComment = false;
+      continue;
+    }
+    if (t.startsWith("/*")) {
+      if (!t.includes("*/")) inBlockComment = true;
+      continue;
+    }
+    if (t.startsWith("//") || t.startsWith("*")) continue;
+    lines.push(line);
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("Sentry.init(")) continue;
+    let depth = 0;
+    const call = [];
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+      }
+      call.push(lines[j]);
+      if (depth === 0 && call.length > 1) break;
+    }
+    if (!call.some((l) => l.includes("beforeSend"))) {
+      flag(
+        "sentry-scrub-disconnected",
+        file,
+        i + 1,
+        "Sentry.init() does not pass `beforeSend` — events reach Sentry unscrubbed, and a credential scrubber elsewhere in the repo cannot help if nothing calls it. Wire it (`beforeSend: scrubSentryEvent`), or add `// guardrails-allow: sentry-scrub-disconnected` if this init provably handles no user data.",
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rule 3 (config side) — wildcard CORS in vercel.json headers. WARNING only:
 // `*` on public static assets (fonts, images) is legitimate, and JSON has no
 // comment syntax for a suppression marker — so surface it, don't gate on it.
