@@ -385,6 +385,95 @@ if (existsSync(vercelJson)) {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 10 — a pgTAP suite can vanish and nothing goes red.
+//
+// Every runner in this fleet selects suites with a GLOB. A glob describes what
+// EXISTS; it cannot have an opinion about what is gone. `files.length === 0`
+// catches total disappearance, but delete ONE suite of nine and the glob finds
+// eight, all pass, exit 0 — nothing knows nine were expected.
+//
+// Measured across the fleet 2026-08-30: HR-Kompis, CRM and Aktsom carried the
+// hole; agertechai-web carried it too. The local fix is a manifest enforced in
+// BOTH directions. This rule makes the fleet-wide half mechanical, and — the
+// reason it is worth a rule rather than four copies — it fires for ARP,
+// Raad-Kompis and KI-Kompis the day they add their FIRST suite, when nobody is
+// thinking about this.
+//
+// ⚠ WHAT THIS PROVES, AND WHAT IT DOES NOT. It checks one direction: every
+// suite on disk is named in the runner. That is enough to catch "this repo has
+// no manifest at all" and "a suite was added without registering it". It CANNOT
+// see the other direction (listed-but-deleted) — that needs the runner to
+// compare against its own list at runtime, which is the local guard's job.
+// Passing this rule does not mean the local guard exists in both directions.
+//
+// ⚠ Comments are stripped first, in BOTH source shapes. A runner or manifest
+// that merely MENTIONS a filename in prose would otherwise satisfy the rule
+// while registering nothing — the exact false-green mutation-proved three times
+// in the calling repos.
+//
+// ⚠ TWO SHAPES ARE ACCEPTED, because the fleet already converged on the better
+// one and the rule must fit reality rather than the reverse. The first draft
+// demanded the names live in `run.mjs`; the pre-flight against all 13 repos then
+// flagged CRM and Aktsom, which BOTH have a correct manifest — in a separate
+// `supabase/tests/MANIFEST` file (one filename per line, `#` for comments) read
+// by the runner. A list as DATA beats a list as code, and CRM's own file argues
+// why. So: names may live in run.mjs or in MANIFEST*.
+// ---------------------------------------------------------------------------
+const testsDir = join(ROOT, "supabase", "tests");
+const suiteRunner = join(testsDir, "run.mjs");
+if (existsSync(testsDir) && existsSync(suiteRunner)) {
+  const entries = readdirSync(testsDir);
+  const suites = entries.filter((f) => f.endsWith("_test.sql")).sort();
+  const runnerRaw = readFileSync(suiteRunner, "utf8");
+
+  if (suites.length > 0 && !/guardrails-allow:\s*test-suite-unregistered\b/.test(runnerRaw)) {
+    let inBlockComment = false;
+    const runnerCode = runnerRaw
+      .split("\n")
+      .filter((line) => {
+        const t = line.trim();
+        if (inBlockComment) {
+          if (t.includes("*/")) inBlockComment = false;
+          return false;
+        }
+        if (t.startsWith("/*")) {
+          if (!t.includes("*/")) inBlockComment = true;
+          return false;
+        }
+        return !t.startsWith("//") && !t.startsWith("*");
+      })
+      .join("\n");
+
+    // MANIFEST files: `#` is the comment marker, one filename per line.
+    const manifestCode = entries
+      .filter((f) => f.startsWith("MANIFEST"))
+      .map((f) => readFileSync(join(testsDir, f), "utf8"))
+      .map((raw) =>
+        raw
+          .split("\n")
+          .filter((l) => !l.trim().startsWith("#"))
+          .join("\n"),
+      )
+      .join("\n");
+
+    const registered = runnerCode + "\n" + manifestCode;
+    const unregistered = suites.filter((f) => !registered.includes(f));
+    if (unregistered.length > 0) {
+      flag(
+        "test-suite-unregistered",
+        suiteRunner,
+        1,
+        `${unregistered.length} pgTAP suite(s) exist on disk but are named neither in run.mjs nor in a supabase/tests/MANIFEST file: ${unregistered.join(", ")}. ` +
+          "The runner globs, and a glob cannot notice a suite that was DELETED — it finds N-1 files, passes them all, and exits 0. " +
+          "Add a manifest (a const array of expected filenames) and enforce it in BOTH directions: listed-but-missing is red, and on-disk-but-unlisted is red. " +
+          "The second direction is what makes the list free to live with — a new suite goes red until registered instead of being silently skipped. " +
+          "Suppress with `// guardrails-allow: test-suite-unregistered` only if this repo provably has no suite-level inventory to protect.",
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Report.
 // ---------------------------------------------------------------------------
 const repoName = relative(join(ROOT, ".."), ROOT) || ROOT;

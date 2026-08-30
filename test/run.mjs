@@ -159,6 +159,43 @@ assert(
   "sentry-scrub-suppressed: guardrails-allow marker was not honored",
 );
 
+// ── test-suite-unregistered — a glob cannot notice a DELETED suite ──────────
+// Three fixtures, because two would not discriminate: firing on the broken one
+// proves nothing unless the correct one is proven to PASS, and neither proves
+// that a filename appearing only in PROSE is rejected.
+const suiteUnreg = run("fixtures-suite-unregistered");
+assert(suiteUnreg.exitCode === 1, `suite-unregistered: expected exit 1, got ${suiteUnreg.exitCode}`);
+assert(
+  count(suiteUnreg.output, "test-suite-unregistered") === 1,
+  "suite-unregistered: rule did not fire on a runner that globs without a manifest",
+);
+for (const s of ["01_alpha_test.sql", "02_beta_test.sql"]) {
+  assert(suiteUnreg.output.includes(s), `suite-unregistered: did not name ${s}`);
+}
+
+const suiteReg = run("fixtures-suite-registered");
+assert(
+  !/test-suite-unregistered/.test(suiteReg.output),
+  "suite-registered: a runner that DOES name every suite was flagged — without this the rule could fire unconditionally and still look correct",
+);
+
+const suiteComment = run("fixtures-suite-comment-only");
+assert(
+  count(suiteComment.output, "test-suite-unregistered") === 1,
+  "suite-comment-only: suite names present ONLY in comments were accepted as a manifest — comment stripping is broken, and that is the exact false-green this rule exists to prevent",
+);
+
+// The shape the fleet actually uses: a separate supabase/tests/MANIFEST file
+// (one filename per line, `#` comments) read by the runner. The first draft of
+// this rule demanded the names live in run.mjs and would have turned CRM and
+// Aktsom red the moment the pin moved — caught by a pre-flight against all 13
+// repos before anything was pushed, not by CI afterwards.
+const suiteManifest = run("fixtures-suite-manifest-file");
+assert(
+  !/test-suite-unregistered/.test(suiteManifest.output),
+  "suite-manifest-file: a MANIFEST-file manifest was rejected — this is the shape CRM and Aktsom use",
+);
+
 if (failures.length) {
   console.error("✗ self-test FAILED:");
   for (const f of failures) console.error(`  - ${f}`);
