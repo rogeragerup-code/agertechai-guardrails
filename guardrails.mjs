@@ -216,16 +216,47 @@ if (middlewareFiles.length && proxyFiles.length) {
   );
 }
 
+// Drop whole-line comments (`//`, `/* … */`, JSDoc `*` lines) before a
+// substring search. ⚠ Until 2026-09-05 rule 7 searched the RAW file, so a
+// proxy.ts with every CSP line commented out still read as "sets an enforcing
+// CSP" — mutation-proved in HR-Kompis: all three header lines commented, the
+// checker said passed. Same false-green the Sentry rule below documents, in
+// the rule that guards the floor's most silent failure. Trailing comments on
+// a code line are NOT stripped (a `//` can sit inside a string, e.g. an URL),
+// so a header string mentioned only in a trailing comment still counts —
+// that shape does not occur in practice, and stripping it would risk
+// mangling real code.
+function withoutCommentLines(raw) {
+  const out = [];
+  let inBlock = false;
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (inBlock) {
+      if (t.includes("*/")) inBlock = false;
+      continue;
+    }
+    if (t.startsWith("/*")) {
+      if (!t.includes("*/")) inBlock = true;
+      continue;
+    }
+    if (t.startsWith("//") || t.startsWith("*")) continue;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 if (edgeEntry) {
-  const mwText = readFileSync(edgeEntry, "utf8");
+  const mwRaw = readFileSync(edgeEntry, "utf8");
+  const mwText = withoutCommentLines(mwRaw);
   // Report-Only does not count — the floor requires an ENFORCING CSP in prod.
   const hasEnforcingCsp = /Content-Security-Policy(?!-Report-Only)/.test(mwText);
-  const allowed = /guardrails-allow:\s*missing-csp\b/.test(mwText);
+  // The suppression marker LIVES in a comment, so it is read from the raw text.
+  const allowed = /guardrails-allow:\s*missing-csp\b/.test(mwRaw);
   if (!hasEnforcingCsp && !allowed) {
     const configCsp = ["next.config.ts", "next.config.js", "next.config.mjs"]
       .map((p) => join(ROOT, p))
       .filter(existsSync)
-      .some((f) => /Content-Security-Policy(?!-Report-Only)/.test(readFileSync(f, "utf8")));
+      .some((f) => /Content-Security-Policy(?!-Report-Only)/.test(withoutCommentLines(readFileSync(f, "utf8"))));
     if (configCsp) {
       warnings.push(
         `${relative(ROOT, edgeEntry)} sets no CSP, but next.config does. That is the documented exception for a STATIC, no-auth surface — an authenticated product needs the nonce-CSP in the proxy itself.`,

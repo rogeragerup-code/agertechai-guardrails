@@ -80,6 +80,18 @@ const proxyNoCsp = run("fixtures-proxy-no-csp");
 assert(proxyNoCsp.exitCode === 1, `proxy-no-csp: expected exit 1, got ${proxyNoCsp.exitCode}`);
 assert(count(proxyNoCsp.output, "missing-csp") === 1, "proxy-no-csp: missing-csp did not fire on a proxy.ts");
 
+// proxy.* where the CSP header exists ONLY in comments — must fail. Until
+// 2026-09-05 the rule searched the raw file, so commenting out every header
+// line still read as "enforcing CSP present" (mutation-proved on HR-Kompis).
+// This is the "can the word sit in a comment while the code changed?" test the
+// Sentry and suite rules already have; rule 7 lacked it.
+const proxyCommentedCsp = run("fixtures-proxy-csp-commented");
+assert(proxyCommentedCsp.exitCode === 1, `proxy-csp-commented: expected exit 1, got ${proxyCommentedCsp.exitCode}`);
+assert(
+  count(proxyCommentedCsp.output, "missing-csp") === 1,
+  "proxy-csp-commented: a CSP header present ONLY in comments was accepted — comment stripping in rule 7 is broken, which is the exact false-green this fixture exists to prevent",
+);
+
 // proxy.* without CSP but next.config has one — documented static-surface
 // exception (reference §1.4). Must WARN and must NOT gate: failing here would
 // red agertechai-web and agerup.it for a decision that was deliberate.
