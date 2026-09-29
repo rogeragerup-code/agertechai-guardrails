@@ -212,23 +212,29 @@ assert(
 // Rule 6b — missing-grant (Supabase stops auto-granting new public objects to
 // anon/authenticated/service_role on 2026-10-30).
 //
-// Seven traps must fire and the look-alikes must not. The one that matters most
+// Ten traps must fire and the look-alikes must not. The one that matters most
 // is `bare_authenticated`: four repos already default new tables to
 // service_role only, so their migrations grant authenticated and never
 // service_role. "Any grant" would pass it — and break every server path.
 // ---------------------------------------------------------------------------
 const grantsRun = run("fixtures-grants");
 assert(
-  count(grantsRun.output, "missing-grant") === 7,
-  `grants: missing-grant fired ${count(grantsRun.output, "missing-grant")} time(s), expected 7`,
+  count(grantsRun.output, "missing-grant") === 10,
+  `grants: missing-grant fired ${count(grantsRun.output, "missing-grant")} time(s), expected 10`,
 );
-for (const t of ["ny_uten", "bare_authenticated", "tidligere_grant", "v_uten", "rpc_uten", "sitert_uten"]) {
+for (const t of ["ny_uten", "bare_authenticated", "tidligere_grant", "v_uten", "rpc_uten", "sitert_uten", "gammel_fn2"]) {
   assert(new RegExp(`"${t}" has no GRANT`).test(grantsRun.output), `grants: ${t} was NOT flagged`);
 }
 assert(/"teller" uses serial/.test(grantsRun.output), "grants: the ungranted serial sequence on teller was NOT flagged");
+// READ-only for service_role is not enough for a TABLE: server writes 42501.
+for (const t of ["bare_select", "kolonne"]) {
+  assert(new RegExp(`"${t}" is only granted READ`).test(grantsRun.output), `grants: read-only/column grant on ${t} was accepted`);
+}
 for (const t of [
   "gammel_uten", // before the cutoff — got default grants when created
   "etter_default", // covered by a default re-grant dated after the enforcement day
+  "gammel_fn", "gammel_v", // `or replace` of an EXISTING object keeps its ACL
+  "samme_fil", // drop + create in ONE earlier file, then `or replace` — ordered by offset
   "ny_med", "senere", "sitert", "rpc_med", // granted (same file, later file, pg_dump quoting, arg list)
   "intern", "tmp_x", // other schema / temp
   "bevisst_uten", // suppressed
@@ -237,7 +243,7 @@ for (const t of [
   "udatert", // undated file — warned about, never guessed at
 ]) {
   // Scoped to THIS rule's messages: missing-rls fires on the same fixture tables.
-  assert(!new RegExp(`"${t}" (?:has no GRANT|uses serial)`).test(grantsRun.output), `grants: ${t} was wrongly flagged`);
+  assert(!new RegExp(`"${t}" (?:has no GRANT|uses serial|is only granted READ)`).test(grantsRun.output), `grants: ${t} was wrongly flagged`);
 }
 assert(
   /missing-grant: 1 migration file\(s\) without a YYYYMMDD prefix were NOT checked/.test(grantsRun.output),

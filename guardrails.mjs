@@ -238,14 +238,21 @@ if (existsSync(migDir)) {
   const CREATE_TABLE = new RegExp(String.raw`\bcreate\s+(?:(?:global\s+|local\s+)?(temp|temporary)\s+)?(?:unlogged\s+)?table\s+(?:if\s+not\s+exists\s+)?` + NAME, "gi");
   const CREATE_VIEW = new RegExp(String.raw`\bcreate\s+(?:or\s+replace\s+)?(?:materialized\s+)?view\s+(?:if\s+not\s+exists\s+)?` + NAME, "gi");
   const CREATE_FUNC = new RegExp(String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+` + NAME + String.raw`\s*\(`, "gi");
-  const GRANT_STMT = /\bgrant\s+[^;]*?\s+on\s+([^;]*?)\s+to\s+([^;]*)/gi;
-  const DEFAULT_GRANT = /\balter\s+default\s+privileges\b[^;]*?\bgrant\s+[^;]*?\s+on\s+(tables|functions|routines|sequences)\s+to\s+([^;]*)/gi;
+  const GRANT_STMT = /\bgrant\s+([^;]*?)\s+on\s+([^;]*?)\s+to\s+([^;]*)/gi;
+  const DEFAULT_GRANT = /\balter\s+default\s+privileges\b[^;]*?\bgrant\s+([^;]*?)\s+on\s+(tables|functions|routines|sequences)\s+to\s+([^;]*)/gi;
+  const DROP = new RegExp(String.raw`\bdrop\s+(function|view|materialized\s+view|table)\s+(?:if\s+exists\s+)?` + NAME, "gi");
+  // A TABLE grant only counts if service_role can WRITE: after 2026-10-30 a
+  // `grant select … to authenticated, service_role` still 42501s every server
+  // insert/update. Column-level grants (`select (a), update (b)`) don't count.
+  const canWrite = (privs) => !/\(/.test(privs) && /\b(all|insert|update|delete)\b/i.test(privs);
 
   const files = walk(migDir, new Set([".sql"])).sort((a, b) => a.localeCompare(b));
   const undated = [];
   const creates = []; // { kind, name, idx, file, line, needsSeq }
-  const grants = []; // { kind: "table"|"function"|"sequence"|"all-*", name, idx }
-  const defaults = []; // { kind, idx }
+  const grants = []; // { kind: "table"|"function"|"sequence"|"all-*", name, idx, write }
+  const defaults = []; // { kind, idx, write }
+  const seen = []; // every create in every dated file: { kind, name, idx }
+  const drops = []; // { kind, name, idx }
 
   files.forEach((file, idx) => {
     const base = file.split(/[\\/]/).pop();
@@ -261,34 +268,56 @@ if (existsSync(migDir)) {
     let m;
     GRANT_STMT.lastIndex = 0;
     while ((m = GRANT_STMT.exec(text))) {
-      if (!/\bservice_role\b/i.test(m[2])) continue;
-      const target = m[1].trim();
+      if (!/\bservice_role\b/i.test(m[3])) continue;
+      const write = canWrite(m[1]);
+      const target = m[2].trim();
       const all = target.match(/^all\s+(tables|functions|routines|sequences)\s+in\s+schema\s+"?public"?/i);
       if (all) {
-        grants.push({ kind: `all-${all[1].toLowerCase().replace("routines", "functions")}`, name: "*", idx });
+        grants.push({ kind: `all-${all[1].toLowerCase().replace("routines", "functions")}`, name: "*", idx, write });
         continue;
       }
       const kindWord = (target.match(/^(table|function|sequence|procedure)\s+/i) || [])[1]?.toLowerCase() ?? "table";
       const objects = target.replace(/^(table|function|sequence|procedure)\s+/i, "").replace(/\([^)]*\)/g, "").split(",");
       for (const o of objects) {
         const n = parseName(o.trim());
-        if (n.schema === "public") grants.push({ kind: kindWord === "procedure" ? "function" : kindWord, name: n.name, idx });
+        if (n.schema === "public") grants.push({ kind: kindWord === "procedure" ? "function" : kindWord, name: n.name, idx, write });
       }
     }
     DEFAULT_GRANT.lastIndex = 0;
     while ((m = DEFAULT_GRANT.exec(text))) {
-      if (date >= GRANT_ENFORCEMENT && /\bservice_role\b/i.test(m[2])) {
-        defaults.push({ kind: m[1].toLowerCase().replace("routines", "functions"), idx });
+      if (date >= GRANT_ENFORCEMENT && /\bservice_role\b/i.test(m[3])) {
+        defaults.push({ kind: m[2].toLowerCase().replace("routines", "functions"), idx, write: canWrite(m[1]) });
       }
     }
+    DROP.lastIndex = 0;
+    while ((m = DROP.exec(text))) {
+      const n = parseName(m[2]);
+      const k = m[1].toLowerCase().startsWith("function") ? "function" : m[1].toLowerCase() === "table" ? "table" : "view";
+      // Ordered by (file, offset), not file alone: a migration that drops and
+      // re-creates in ONE file (HR 000062 does exactly that) must read as
+      // drop-then-create, or a later `or replace` is wrongly flagged.
+      if (n.schema === "public") drops.push({ kind: k, name: n.name, key: idx * 1e9 + m.index });
+    }
 
-    if (date < GRANT_CUTOFF) return;
-
+    const fileCreates = []; // added to `seen` AFTER this file, so a create never sees itself
     const push = (kind, match, extra = {}) => {
       const n = parseName(match[match.length - 1]);
       if (n.schema !== "public") return;
+      const key = idx * 1e9 + match.index;
+      fileCreates.push({ kind, name: n.name, key });
+      if (date < GRANT_CUTOFF) return;
       const line = lineOf(text, match.index);
       if (suppressed(rawLines, line - 1, "missing-grant")) return;
+      // `create or replace` of an object an EARLIER migration created keeps its
+      // ACL in Postgres — unless it was dropped since (a drop loses the ACL).
+      // Without this, every body-only fix to an existing function went red.
+      if (/\bor\s+replace\b/i.test(match[0])) {
+        const prev = seen.filter((s) => s.kind === kind && s.name === n.name).map((s) => s.key);
+        if (prev.length > 0) {
+          const last = Math.max(...prev);
+          if (!drops.some((d) => d.kind === kind && d.name === n.name && d.key > last && d.key < key)) return;
+        }
+      }
       creates.push({ kind, name: n.name, idx, file, line, ...extra });
     };
     CREATE_TABLE.lastIndex = 0;
@@ -304,25 +333,38 @@ if (existsSync(migDir)) {
       if (/\breturns\s+(?:event_)?trigger\b/i.test(statementAt(text, m.index))) continue;
       push("function", m);
     }
+    seen.push(...fileCreates);
   });
 
-  const covered = (kind, name, idx) => {
+  /** "ok" | "none" | "read-only" (a table grant exists but service_role can't write). */
+  const coverage = (kind, name, idx) => {
     const grantKind = kind === "view" ? "table" : kind;
     const allKind = grantKind === "table" ? "all-tables" : "all-functions";
     const defaultKind = grantKind === "table" ? "tables" : "functions";
-    return (
-      grants.some((g) => g.idx >= idx && ((g.kind === grantKind && g.name === name) || g.kind === allKind)) ||
-      defaults.some((d) => d.idx <= idx && d.kind === defaultKind)
-    );
+    const needsWrite = kind === "table";
+    const matching = [
+      ...grants.filter((g) => g.idx >= idx && ((g.kind === grantKind && g.name === name) || g.kind === allKind)),
+      ...defaults.filter((d) => d.idx <= idx && d.kind === defaultKind),
+    ];
+    if (matching.length === 0) return "none";
+    return !needsWrite || matching.some((g) => g.write) ? "ok" : "read-only";
   };
   const label = { table: "Table", view: "View", function: "Function" };
   for (const c of creates) {
-    if (!covered(c.kind, c.name, c.idx)) {
+    const cov = coverage(c.kind, c.name, c.idx);
+    if (cov === "none") {
       flag(
         "missing-grant",
         c.file,
         c.line,
         `${label[c.kind]} "${c.name}" has no GRANT … TO service_role in this or a later migration. From 2026-10-30 Supabase no longer auto-grants new public objects (not even to service_role), so the Data API — server code on the service key included — answers 42501. Grant service_role (plus authenticated/anon only where intended), or mark "-- guardrails-allow: missing-grant" if the object must stay off the API.`,
+      );
+    } else if (cov === "read-only") {
+      flag(
+        "missing-grant",
+        c.file,
+        c.line,
+        `Table "${c.name}" is only granted READ (or column-level) access for service_role — every server insert/update/delete over the Data API answers 42501 after 2026-10-30. Grant insert/update/delete (or all) to service_role, or suppress if the table is provably read-only for the server.`,
       );
     }
     const seqGranted =

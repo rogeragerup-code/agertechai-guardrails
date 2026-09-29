@@ -58,3 +58,23 @@ GRANT ALL ON TABLE "public"."sitert" TO "service_role";
 -- FLAGGED: quoted style WITHOUT a grant. Without this case, a checker that
 -- failed to unquote "public" would skip quoted DDL silently and still pass.
 CREATE TABLE "public"."sitert_uten" ("id" uuid);
+
+-- FLAGGED (read-only): service_role may only READ — every server write 42501s.
+create table public.bare_select (id uuid primary key);
+grant select on public.bare_select to authenticated, service_role;
+
+-- FLAGGED (read-only): a column-level grant is not a table grant.
+create table public.kolonne (id uuid primary key, x int);
+grant select (id), update (x) on public.kolonne to service_role;
+
+-- Not flagged: `or replace` of an EXISTING function/view keeps its ACL.
+create or replace function public.gammel_fn() returns void language sql as $$ select 2 $$;
+create or replace view public.gammel_v as select 2 as x;
+
+-- FLAGGED: dropped first, so the ACL is gone and the new one has none.
+drop function if exists public.gammel_fn2();
+create or replace function public.gammel_fn2() returns void language sql as $$ select 2 $$;
+
+-- Not flagged: replaces an object whose LAST event before this was a create
+-- (the drop sat before it, in the same earlier file).
+create or replace function public.samme_fil() returns void language sql as $$ select 2 $$;
