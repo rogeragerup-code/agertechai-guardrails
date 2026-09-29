@@ -175,6 +175,176 @@ if (existsSync(migDir)) {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 6b — missing-grant: a NEW public table/view/function with no explicit
+// GRANT to service_role.
+//
+// From 2026-10-30 Supabase stops auto-granting new objects in `public` to anon,
+// authenticated AND service_role (tables, views, functions, sequences). Existing
+// objects keep their grants, so nothing breaks on the day — the break is the
+// FIRST migration after it that forgets a grant: the Data API answers 42501,
+// including for server code on the service key.
+//
+// ⚠ WHY service_role SPECIFICALLY, not "any grant". Measured 2026-09-29: HR, CRM,
+// Aktsom and AgerTechAI already altered their default privileges so new tables
+// go to service_role ONLY. Their migrations therefore grant `authenticated`
+// explicitly but have never needed to grant service_role — it arrived by
+// default. That is exactly the default that disappears. "Any grant" would pass
+// a migration that grants authenticated and silently breaks every server path.
+// Granting service_role adds no surface: it bypasses RLS anyway.
+//
+// ⚠ ONLY MIGRATIONS DATED >= GRANT_CUTOFF ARE CHECKED. Every older object got
+// the default grants when it was created; flagging them would red all 8 repos
+// with migrations (4–27 historic hits each, mostly `create or replace function`
+// whose grant sits in an earlier file). Undated files can't be placed in time,
+// so they are skipped with a warning rather than guessed at.
+//
+// A grant only counts in the SAME or a LATER file: a grant in an earlier file
+// belonged to a previous incarnation of the object (or to nothing yet).
+// Trigger functions are exempt (called by triggers, never over the API).
+//
+// ⚠ `alter default privileges … grant … to service_role` ONLY COUNTS IF DATED ON
+// OR AFTER THE ENFORCEMENT DAY. On 2026-10-30 Supabase itself runs the revoke on
+// the default privileges, which undoes every earlier default grant. And every
+// pg_dump baseline carries those earlier grants verbatim (`ALTER DEFAULT
+// PRIVILEGES FOR ROLE "postgres" … GRANT ALL ON TABLES TO "service_role"`) — the
+// first draft counted them, which made this rule INERT in every repo with a
+// baseline. The fleet preflight read "0 findings, identical" and measured
+// nothing; a probe migration in HR-Kompis, which should have been flagged,
+// passed. Only a deliberate re-grant written after the change survives it.
+// ---------------------------------------------------------------------------
+const GRANT_CUTOFF = "20260930";
+const GRANT_ENFORCEMENT = "20261030";
+if (existsSync(migDir)) {
+  /** Mask comments and dollar-quoted bodies with spaces, keeping newlines, so
+   *  offsets still map to line numbers and nothing inside a body is matched. */
+  const mask = (sql) =>
+    sql
+      .replace(/\$(\w*)\$[\s\S]*?\$\1\$/g, (m) => m.replace(/[^\n]/g, " "))
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+      .replace(/--[^\n]*/g, (m) => " ".repeat(m.length));
+  const lineOf = (text, idx) => text.slice(0, idx).split("\n").length;
+  /** `"public"."x"` / `public.x` / `x` → { schema, name } (lowercased). */
+  const parseName = (raw) => {
+    const parts = raw.replace(/"/g, "").split(".");
+    return parts.length > 1
+      ? { schema: parts[0].toLowerCase(), name: parts[1].toLowerCase() }
+      : { schema: "public", name: parts[0].toLowerCase() };
+  };
+  const statementAt = (text, idx) => {
+    const end = text.indexOf(";", idx);
+    return text.slice(idx, end === -1 ? text.length : end);
+  };
+  const NAME = String.raw`((?:"?\w+"?\.)?"?\w+"?)`;
+  const CREATE_TABLE = new RegExp(String.raw`\bcreate\s+(?:(?:global\s+|local\s+)?(temp|temporary)\s+)?(?:unlogged\s+)?table\s+(?:if\s+not\s+exists\s+)?` + NAME, "gi");
+  const CREATE_VIEW = new RegExp(String.raw`\bcreate\s+(?:or\s+replace\s+)?(?:materialized\s+)?view\s+(?:if\s+not\s+exists\s+)?` + NAME, "gi");
+  const CREATE_FUNC = new RegExp(String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+` + NAME + String.raw`\s*\(`, "gi");
+  const GRANT_STMT = /\bgrant\s+[^;]*?\s+on\s+([^;]*?)\s+to\s+([^;]*)/gi;
+  const DEFAULT_GRANT = /\balter\s+default\s+privileges\b[^;]*?\bgrant\s+[^;]*?\s+on\s+(tables|functions|routines|sequences)\s+to\s+([^;]*)/gi;
+
+  const files = walk(migDir, new Set([".sql"])).sort((a, b) => a.localeCompare(b));
+  const undated = [];
+  const creates = []; // { kind, name, idx, file, line, needsSeq }
+  const grants = []; // { kind: "table"|"function"|"sequence"|"all-*", name, idx }
+  const defaults = []; // { kind, idx }
+
+  files.forEach((file, idx) => {
+    const base = file.split(/[\\/]/).pop();
+    const date = (base.match(/^(\d{8})/) || [])[1];
+    if (!date) {
+      undated.push(relative(ROOT, file));
+      return;
+    }
+    const raw = readFileSync(file, "utf8");
+    const text = mask(raw);
+    const rawLines = raw.split(/\r?\n/);
+
+    let m;
+    GRANT_STMT.lastIndex = 0;
+    while ((m = GRANT_STMT.exec(text))) {
+      if (!/\bservice_role\b/i.test(m[2])) continue;
+      const target = m[1].trim();
+      const all = target.match(/^all\s+(tables|functions|routines|sequences)\s+in\s+schema\s+"?public"?/i);
+      if (all) {
+        grants.push({ kind: `all-${all[1].toLowerCase().replace("routines", "functions")}`, name: "*", idx });
+        continue;
+      }
+      const kindWord = (target.match(/^(table|function|sequence|procedure)\s+/i) || [])[1]?.toLowerCase() ?? "table";
+      const objects = target.replace(/^(table|function|sequence|procedure)\s+/i, "").replace(/\([^)]*\)/g, "").split(",");
+      for (const o of objects) {
+        const n = parseName(o.trim());
+        if (n.schema === "public") grants.push({ kind: kindWord === "procedure" ? "function" : kindWord, name: n.name, idx });
+      }
+    }
+    DEFAULT_GRANT.lastIndex = 0;
+    while ((m = DEFAULT_GRANT.exec(text))) {
+      if (date >= GRANT_ENFORCEMENT && /\bservice_role\b/i.test(m[2])) {
+        defaults.push({ kind: m[1].toLowerCase().replace("routines", "functions"), idx });
+      }
+    }
+
+    if (date < GRANT_CUTOFF) return;
+
+    const push = (kind, match, extra = {}) => {
+      const n = parseName(match[match.length - 1]);
+      if (n.schema !== "public") return;
+      const line = lineOf(text, match.index);
+      if (suppressed(rawLines, line - 1, "missing-grant")) return;
+      creates.push({ kind, name: n.name, idx, file, line, ...extra });
+    };
+    CREATE_TABLE.lastIndex = 0;
+    while ((m = CREATE_TABLE.exec(text))) {
+      if (m[1]) continue; // temp table — never exposed
+      const stmt = statementAt(text, m.index);
+      push("table", { 0: m[0], 1: m[2], length: 2, index: m.index }, { needsSeq: /\b(?:small|big)?serial\b|\bnextval\s*\(/i.test(stmt) });
+    }
+    CREATE_VIEW.lastIndex = 0;
+    while ((m = CREATE_VIEW.exec(text))) push("view", m);
+    CREATE_FUNC.lastIndex = 0;
+    while ((m = CREATE_FUNC.exec(text))) {
+      if (/\breturns\s+(?:event_)?trigger\b/i.test(statementAt(text, m.index))) continue;
+      push("function", m);
+    }
+  });
+
+  const covered = (kind, name, idx) => {
+    const grantKind = kind === "view" ? "table" : kind;
+    const allKind = grantKind === "table" ? "all-tables" : "all-functions";
+    const defaultKind = grantKind === "table" ? "tables" : "functions";
+    return (
+      grants.some((g) => g.idx >= idx && ((g.kind === grantKind && g.name === name) || g.kind === allKind)) ||
+      defaults.some((d) => d.idx <= idx && d.kind === defaultKind)
+    );
+  };
+  const label = { table: "Table", view: "View", function: "Function" };
+  for (const c of creates) {
+    if (!covered(c.kind, c.name, c.idx)) {
+      flag(
+        "missing-grant",
+        c.file,
+        c.line,
+        `${label[c.kind]} "${c.name}" has no GRANT … TO service_role in this or a later migration. From 2026-10-30 Supabase no longer auto-grants new public objects (not even to service_role), so the Data API — server code on the service key included — answers 42501. Grant service_role (plus authenticated/anon only where intended), or mark "-- guardrails-allow: missing-grant" if the object must stay off the API.`,
+      );
+    }
+    const seqGranted =
+      grants.some((g) => g.idx >= c.idx && (g.kind === "sequence" || g.kind === "all-sequences")) ||
+      defaults.some((d) => d.idx <= c.idx && d.kind === "sequences");
+    if (c.needsSeq && !seqGranted) {
+      flag(
+        "missing-grant",
+        c.file,
+        c.line,
+        `Table "${c.name}" uses serial/nextval() but no sequence is granted to service_role — inserts over the Data API fail with 42501 after 2026-10-30. Grant usage on the sequence, or use an identity column (no sequence grant needed).`,
+      );
+    }
+  }
+  if (undated.length > 0) {
+    warnings.push(
+      `missing-grant: ${undated.length} migration file(s) without a YYYYMMDD prefix were NOT checked (can't tell whether they predate the 2026-10-30 grant change): ${undated.slice(0, 3).join(", ")}${undated.length > 3 ? ", …" : ""}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rule 7 — CSP in the edge entrypoint (proxy on Next 16, middleware before it).
 //
 // ⚠ Next 16 RENAMED this convention from `middleware` to `proxy`. Checking only

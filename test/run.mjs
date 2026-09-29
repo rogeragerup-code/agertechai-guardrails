@@ -208,6 +208,43 @@ assert(
   "suite-manifest-file: a MANIFEST-file manifest was rejected — this is the shape CRM and Aktsom use",
 );
 
+// ---------------------------------------------------------------------------
+// Rule 6b — missing-grant (Supabase stops auto-granting new public objects to
+// anon/authenticated/service_role on 2026-10-30).
+//
+// Seven traps must fire and the look-alikes must not. The one that matters most
+// is `bare_authenticated`: four repos already default new tables to
+// service_role only, so their migrations grant authenticated and never
+// service_role. "Any grant" would pass it — and break every server path.
+// ---------------------------------------------------------------------------
+const grantsRun = run("fixtures-grants");
+assert(
+  count(grantsRun.output, "missing-grant") === 7,
+  `grants: missing-grant fired ${count(grantsRun.output, "missing-grant")} time(s), expected 7`,
+);
+for (const t of ["ny_uten", "bare_authenticated", "tidligere_grant", "v_uten", "rpc_uten", "sitert_uten"]) {
+  assert(new RegExp(`"${t}" has no GRANT`).test(grantsRun.output), `grants: ${t} was NOT flagged`);
+}
+assert(/"teller" uses serial/.test(grantsRun.output), "grants: the ungranted serial sequence on teller was NOT flagged");
+for (const t of [
+  "gammel_uten", // before the cutoff — got default grants when created
+  "etter_default", // covered by a default re-grant dated after the enforcement day
+  "ny_med", "senere", "sitert", "rpc_med", // granted (same file, later file, pg_dump quoting, arg list)
+  "intern", "tmp_x", // other schema / temp
+  "bevisst_uten", // suppressed
+  "trig", // trigger function
+  "kommentert", "blokkommentert", "i_kroppen", "dynamisk", // comments / function body (an UNcommented string there too)
+  "udatert", // undated file — warned about, never guessed at
+]) {
+  // Scoped to THIS rule's messages: missing-rls fires on the same fixture tables.
+  assert(!new RegExp(`"${t}" (?:has no GRANT|uses serial)`).test(grantsRun.output), `grants: ${t} was wrongly flagged`);
+}
+assert(
+  /missing-grant: 1 migration file\(s\) without a YYYYMMDD prefix were NOT checked/.test(grantsRun.output),
+  "grants: the undated migration was skipped SILENTLY — a skip must be visible",
+);
+assert(count(main.output, "missing-grant") === 0, "fixtures: missing-grant fired on the main fixture (all undated)");
+
 if (failures.length) {
   console.error("✗ self-test FAILED:");
   for (const f of failures) console.error(`  - ${f}`);

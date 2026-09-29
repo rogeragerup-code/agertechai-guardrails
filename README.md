@@ -39,6 +39,7 @@ Each rule maps 1:1 to a real breach class (see the engineering reference for sou
 | `service-role-client` | `SUPABASE_SERVICE_ROLE_KEY` in a `"use client"` file | Service-role key in client bundle |
 | `weak-redirect` | the specific `startsWith("//")` anti-pattern in a file without the canonical regex — it does **not** detect redirects with no validation at all | Open redirect (`/\evil.com` bypass) |
 | `missing-rls` | a `create table` with no matching `enable row level security` (incl. pg_dump's `ALTER TABLE ONLY` form; commented-out DDL ignored) | Lovable CVE-2025-48757 RLS-bypass class |
+| `missing-grant` | a `create table`/`create view`/non-trigger `create function` in `public`, in a migration dated **≥ 2026-09-30**, with no `GRANT … TO service_role` on it in the same or a later migration — plus a `serial`/`nextval()` table with no sequence grant. Older migrations are not checked; undated ones are skipped with a warning | Supabase's 2026-10-30 default change: new public objects are no longer granted to anon, authenticated **or service_role**, so the Data API — server code on the service key included — answers `42501`. Four repos already defaulted new tables to service_role only, so their migrations grant `authenticated` and have never needed to grant service_role; that default is exactly what disappears |
 | `missing-csp` | `proxy.*`/`middleware.*` present but no **enforcing** `Content-Security-Policy` there **or** in `next.config` (Report-Only doesn't count) | No nonce-based CSP |
 | `duplicate-edge-entry` | Both a `middleware.*` **and** a `proxy.*` entrypoint exist | Next resolves one and silently ignores the other — this shipped a prod 404 on every unprefixed route |
 | `secret-in-log` | `console.*` logging an env secret or a known secret identifier | Secrets leaking into logs / aggregators |
@@ -123,13 +124,14 @@ Tags are how repos pin a version. When a rule tightens:
 
 The self-test (`test/run.mjs`) runs a deliberately-insecure fixture and asserts every rule fires exactly once and that a correctly-secured table is **not** flagged. It runs in CI on every push.
 
-## Why these eleven
+## Why these twelve
 
 <!-- ⚠ Dette tallet var «eight» da regelen under ble lagt til 2026-08-30, og
      tabellen hadde da alt TI rader — overskriften hadde drevet i to runder uten
      at noen talte. Jeg inkrementerte den først til «nine», som gjorde den
-     annerledes gal. Teller du reglene: elleve failende regler i tabellen over,
-     pluss tre warnings som ikke feller bygget. -->
+     annerledes gal. Teller du reglene: tolv failende regler i tabellen over
+     (talt 2026-09-29 da missing-grant kom til). Warnings, som ikke feller
+     bygget, telles bevisst ikke her — det tallet sto feil sist. -->
 
 They are the rules a linter passes straight through — authorization, policy, and data-exposure correctness, not style. Spend human review here; let CI hold the floor.
 
@@ -140,6 +142,7 @@ This is a **reflex layer** — line-based regexes that catch the naive form of e
 - **Line-based matching.** Any construct split across lines (`.select(` + `'*'` on the next line, a `console.log(` with the secret argument on its own line, a CORS header name and value far apart) is invisible. The one mitigation: the `headers()` key/value CORS form is checked with a 2-line lookahead window.
 - **`weak-redirect` detects one named anti-pattern** (`startsWith("//")` without the canonical regex `/^\/(?!\/)[^\\]*$/` in the file). A redirect with *no* validation at all passes clean — that's a review-cadence catch, not a regex catch.
 - **`service-role-client` only sees the literal name in the same file.** The realistic leak — a `"use client"` file importing a server module that holds the key, pulled in transitively by the bundler — needs a build-level check. New-style `sb_secret_...` key env names that don't contain `SERVICE_ROLE_KEY` are also not matched.
+- **`missing-grant` checks presence, not fitness.** It demands a grant to `service_role` because that is the default four repos silently relied on; it cannot know whether `authenticated` or `anon` also need one — that is still a review question. Other gaps: a `create or replace` of an existing function or view keeps its old ACL but is still flagged (restate the grant, which the fleet's migrations mostly do anyway, or suppress); DDL built dynamically via `execute` and SQL outside `supabase/migrations/` (e.g. a `docs/*.sql` pasted into the prod SQL editor) are not seen; and `alter default privileges … to service_role` only counts when dated **≥ 2026-10-30**, because Supabase's own revoke on that day undoes every earlier one — including the copy every pg_dump baseline carries. The first draft counted those, which made the rule inert in every repo with a baseline: the fleet preflight read "0 findings, identical" and measured nothing, and only a probe migration that should have been flagged exposed it. Positive control since then: a probe migration in each of the 7 repos with migrations is flagged. Also pre-existing and unrelated: `missing-rls` strips `--` comments but not `/* … */` blocks, so a block-commented `create table` still counts there.
 - **`test-suite-unregistered` proves registration, not enforcement.** It sees that a name is listed; it cannot see whether the runner actually compares the list against the directory, or in which direction. A repo could list every suite in a dead constant and pass. The runtime half is the local runner's job — and neither half survives the whole workflow file being deleted, which no guard can prevent (a guard cannot guarantee its own invocation).
 - **`secret-in-log` needs the call and the secret on one line**, and `console.log(JSON.stringify(process.env))` — the worst case — carries no secret identifier to match.
 - **Supply chain: the `v1` tag is mutable by design** (see *Bumping a rule*), and it is the one unpinned link in an otherwise SHA-pinned chain. Callers fetch the checker at `@v1`, and the reusable workflow hands `SUPABASE_ACCESS_TOKEN` to the fetched `db-advisor.mjs`. Anyone who can force-push this repo's tags executes code in every consumer's CI with that secret in the environment. Single-owner repo, branch-protected — accepted; if the ownership model ever widens, switch callers to SHA pins.
