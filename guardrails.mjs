@@ -311,9 +311,17 @@ if (existsSync(migDir)) {
       // `create or replace` of an object an EARLIER migration created keeps its
       // ACL in Postgres — unless it was dropped since (a drop loses the ACL).
       // Without this, every body-only fix to an existing function went red.
+      //
+      // ⚠ NOT when THIS file also drops the name, before OR after. That is how
+      // the fleet changes a signature (HR 000089: `create or replace f(new sig)`
+      // at the top, `drop function f(old sig)` further down) — the create makes
+      // a NEW function object with no ACL. Matching is by name, so without this
+      // the new signature was skipped as a "replace" (re-sweep of bafbd11,
+      // confirmed with a probe on HR's real migrations).
       if (/\bor\s+replace\b/i.test(match[0])) {
         const prev = seen.filter((s) => s.kind === kind && s.name === n.name).map((s) => s.key);
-        if (prev.length > 0) {
+        const fileDrops = drops.some((d) => d.kind === kind && d.name === n.name && Math.floor(d.key / 1e9) === idx);
+        if (prev.length > 0 && !fileDrops) {
           const last = Math.max(...prev);
           if (!drops.some((d) => d.kind === kind && d.name === n.name && d.key > last && d.key < key)) return;
         }

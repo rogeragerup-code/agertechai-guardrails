@@ -78,3 +78,8 @@ create or replace function public.gammel_fn2() returns void language sql as $$ s
 -- Not flagged: replaces an object whose LAST event before this was a create
 -- (the drop sat before it, in the same earlier file).
 create or replace function public.samme_fil() returns void language sql as $$ select 2 $$;
+
+-- FLAGGED: HR's signature-change pattern (000089) — new signature first, old one
+-- dropped AFTER, in the same file. The new signature is a NEW object, no ACL.
+create or replace function public.sig_fn(a int, b text) returns void language sql as $$ select 2 $$;
+drop function if exists public.sig_fn(int);

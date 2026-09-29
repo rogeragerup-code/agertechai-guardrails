@@ -19,3 +19,7 @@ create or replace view public.gammel_v as select 1 as x;
 -- that exists afterwards is the re-created one.
 drop function if exists public.samme_fil();
 create function public.samme_fil() returns void language sql as $$ select 1 $$;
+
+create or replace function public.sig_fn(a int) returns void language sql as $$ select 1 $$;
+
+create or replace function public.mellom_fn() returns void language sql as $$ select 1 $$;

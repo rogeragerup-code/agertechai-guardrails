@@ -212,17 +212,17 @@ assert(
 // Rule 6b — missing-grant (Supabase stops auto-granting new public objects to
 // anon/authenticated/service_role on 2026-10-30).
 //
-// Ten traps must fire and the look-alikes must not. The one that matters most
+// Twelve traps must fire and the look-alikes must not. The one that matters most
 // is `bare_authenticated`: four repos already default new tables to
 // service_role only, so their migrations grant authenticated and never
 // service_role. "Any grant" would pass it — and break every server path.
 // ---------------------------------------------------------------------------
 const grantsRun = run("fixtures-grants");
 assert(
-  count(grantsRun.output, "missing-grant") === 10,
-  `grants: missing-grant fired ${count(grantsRun.output, "missing-grant")} time(s), expected 10`,
+  count(grantsRun.output, "missing-grant") === 12,
+  `grants: missing-grant fired ${count(grantsRun.output, "missing-grant")} time(s), expected 12`,
 );
-for (const t of ["ny_uten", "bare_authenticated", "tidligere_grant", "v_uten", "rpc_uten", "sitert_uten", "gammel_fn2"]) {
+for (const t of ["ny_uten", "bare_authenticated", "tidligere_grant", "v_uten", "rpc_uten", "sitert_uten", "gammel_fn2", "sig_fn", "mellom_fn"]) {
   assert(new RegExp(`"${t}" has no GRANT`).test(grantsRun.output), `grants: ${t} was NOT flagged`);
 }
 assert(/"teller" uses serial/.test(grantsRun.output), "grants: the ungranted serial sequence on teller was NOT flagged");
