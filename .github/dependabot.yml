@@ -1,0 +1,19 @@
+version: 2
+# Repoet har ingen npm-avhengigheter (package.json har ingen dependencies), så bare
+# GitHub Actions. Det er de SHA-pinnede actions i check.yml og selftest.yml som
+# kjører i hvert repo som bruker guardrails, så det er dem det gjelder.
+# Varsler og automatiske sikkerhetsoppdateringer er slått på i repoets innstillinger
+# (målt 2026-10-18).
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Vent sju dager etter at en utgave er publisert, så en kapret utgave rekker å
+    # bli oppdaget først. Gjelder ikke sikkerhetsoppdateringer.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

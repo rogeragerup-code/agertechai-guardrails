@@ -10,13 +10,26 @@ Add `.github/workflows/guardrails.yml` to any repo:
 
 ```yaml
 name: guardrails
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]   # your default branch
+  pull_request:
+permissions:
+  contents: read
 jobs:
   guardrails:
-    uses: rogeragerup-code/agertechai-guardrails/.github/workflows/check.yml@v1
+    uses: rogeragerup-code/agertechai-guardrails/.github/workflows/check.yml@6fabe76f40ef0f7aade402e7a33dba6d51dc6748 # v1
+    with:
+      ref: 6fabe76f40ef0f7aade402e7a33dba6d51dc6748 # v1, same SHA as `uses:`
 ```
 
-That's it. The reusable workflow checks out your repo, fetches the pinned guardrails script, and runs it. (`examples/caller-workflow.yml` is the same file ready to copy.)
+That's it. Three things in it are deliberate:
+
+- **`push` only on the default branch.** `on: [push, pull_request]` runs everything twice for every push to a branch with an open PR. Measured 2026-08-27: the account ran out of Actions minutes and all CI stopped.
+- **`permissions: contents: read`.** Without it the job gets the repo's default token permissions, which can change in the settings with no diff. The reusable workflow inherits it.
+- **Both references pinned to a SHA.** `v1` is a movable tag in a public repo. `ref:` must match `uses:`, because the reusable workflow fetches its own script again at that ref.
+
+The SHA above is the one `v1` pointed to when this was written. Pin the commit you have reviewed. The reusable workflow checks out your repo, fetches the pinned guardrails script, and runs it. (`examples/caller-workflow.yml` is the same file ready to copy.)
 
 ## Run it locally
 
@@ -55,7 +68,7 @@ Scope: code rules scan `src/`, `app/`, `pages/`, `lib/`, `components/`, `server/
 
 ## Database side — Supabase Advisors (opt-in)
 
-The eight rules above check **code**. They can't see the live database, where the
+The rules above check **code**. They can't see the live database, where the
 2026-06 cross-product sweep found the real issues (leftover `anon` execute on
 `SECURITY DEFINER` functions, unpinned `search_path`, anon `INSERT WITH CHECK(true)`
 lead tables). To run the Supabase **Advisors** automatically in CI, give the
@@ -63,11 +76,17 @@ caller a project ref + token:
 
 ```yaml
 name: guardrails
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]   # your default branch
+  pull_request:
+permissions:
+  contents: read
 jobs:
   guardrails:
-    uses: rogeragerup-code/agertechai-guardrails/.github/workflows/check.yml@v1
+    uses: rogeragerup-code/agertechai-guardrails/.github/workflows/check.yml@6fabe76f40ef0f7aade402e7a33dba6d51dc6748 # v1
     with:
+      ref: 6fabe76f40ef0f7aade402e7a33dba6d51dc6748 # v1, same SHA as `uses:`
       supabase_project_ref: your-project-ref      # not a secret
     secrets:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}   # repo secret

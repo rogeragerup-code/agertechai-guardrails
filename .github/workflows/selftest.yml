@@ -1,13 +1,21 @@
 # CI for the guardrails repo itself: prove every rule still fires on the fixture.
 name: selftest
 
+# `push` bare på main: med både `push` og `pull_request` uten filter kjører alt to
+# ganger for hver push til en gren med åpen PR (samme klasse som i README-snutten).
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   selftest:
     runs-on: ubuntu-latest
+    # Målt 2026-10-18: 11–14 s.
+    timeout-minutes: 10
     steps:
       # Selftesten kjører bare test/run.mjs — den pusher ingenting, så tokenet skal
       # ikke bli liggende i .git/config (checkout v2+ skriver den dit som default).

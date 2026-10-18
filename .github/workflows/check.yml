@@ -28,6 +28,15 @@ on:
 jobs:
   guardrails:
     runs-on: ubuntu-latest
+    # Jobben leser bare (to checkouts, setup-node og to node-skript). En kaller som
+    # ikke skriver `permissions:` selv, får ellers repoets standard for GITHUB_TOKEN.
+    # Her kan den bare snevres inn, aldri utvides, så kallerens blokk gjelder fortsatt.
+    permissions:
+      contents: read
+    # Målt 2026-10-18: 20–25 s i CRM. En kaller kan ikke sette `timeout-minutes` på en
+    # jobb som bruker en gjenbrukbar arbeidsflyt, så grensen må stå her. Uten den
+    # kan et hengende nettkall (Advisor-steget) bruke opp til 360 minutter.
+    timeout-minutes: 10
     steps:
       # persist-credentials: false på BEGGE checkouts — denne workflowen leser bare
       # kode og pusher aldri. Uten flagget skriver checkout v2+ GITHUB_TOKEN inn i
